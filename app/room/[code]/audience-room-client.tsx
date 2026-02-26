@@ -68,6 +68,7 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
 
     const loadQuestion = async (qId: string | null) => {
       if (!qId) { setQuestion(null); return }
+      setQuestion(prev => prev?.id === qId ? prev : null)
       const { data } = await supabase.from('questions').select('*').eq('id', qId).single()
       setQuestion(data)
       setHasGuessedCorrect(false)
@@ -89,16 +90,12 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
     }
 
     const roomChannel = supabase
-      .channel(`audience-room:${room.id}`)
+      .channel(`room-events:${room.id}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${room.id}` }, ({ new: updated }) => {
         const updatedRoom = updated as Room
         setRoom(updatedRoom)
         loadQuestion(updatedRoom.current_question_id)
       })
-      .subscribe()
-
-    const guessChannel = supabase
-      .channel(`audience-guesses:${room.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'guesses', filter: `room_id=eq.${room.id}` }, ({ new: g }) => {
         const newGuess = g as Guess
         setGuesses(prev => {
@@ -106,13 +103,24 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
           return [...prev, newGuess]
         })
       })
-      .subscribe()
-
-    const participantsChannel = supabase
-      .channel(`audience-participants:${room.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${room.id}` }, () => {
-        supabase.from('participants').select('*').eq('room_id', room.id).order('score', { ascending: false }).then(({ data }) => {
-          if (data) setParticipants(data)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${room.id}` }, (payload) => {
+        setParticipants(prev => {
+          let next = [...prev]
+          if (payload.eventType === 'INSERT') {
+            if (!next.find(p => p.id === payload.new.id)) {
+              next.push(payload.new as Participant)
+            }
+          } else if (payload.eventType === 'UPDATE') {
+            const idx = next.findIndex(p => p.id === payload.new.id)
+            if (idx !== -1) {
+              next[idx] = payload.new as Participant
+            } else {
+              next.push(payload.new as Participant)
+            }
+          } else if (payload.eventType === 'DELETE') {
+            next = next.filter(p => p.id !== payload.old.id)
+          }
+          return next.sort((a, b) => b.score - a.score)
         })
       })
       .subscribe()
@@ -124,8 +132,6 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
 
     return () => {
       supabase.removeChannel(roomChannel)
-      supabase.removeChannel(guessChannel)
-      supabase.removeChannel(participantsChannel)
     }
   }, [joined, room?.id, participant?.id])
 

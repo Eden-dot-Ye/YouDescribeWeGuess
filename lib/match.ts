@@ -19,13 +19,9 @@ export function isCorrectGuess(guess: string, answerZh: string, answerEn: string
   const en = normalize(answerEn)
 
   // Exact or partial match for both Chinese and English
+  // The guess must completely contain the correct answer
   return (
-    g === zh ||
-    g === en ||
-    g.includes(zh) ||
-    zh.includes(g) ||
-    g === en ||
-    g.includes(en) ||
-    en.includes(g)
+    (Boolean(zh) && g.includes(zh)) ||
+    (Boolean(en) && g.includes(en))
   )
 }

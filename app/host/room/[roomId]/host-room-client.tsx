@@ -36,23 +36,30 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
     const supabase = createClient()
 
     const roomChannel = supabase
-      .channel(`host-room:${room.id}`)
+      .channel(`room-events:${room.id}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${room.id}` }, ({ new: updated }) => {
         setRoom(updated as Room)
       })
-      .subscribe()
-
-    const participantsChannel = supabase
-      .channel(`host-participants:${room.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${room.id}` }, () => {
-        supabase.from('participants').select('*').eq('room_id', room.id).order('score', { ascending: false }).then(({ data }) => {
-          if (data) setParticipants(data)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${room.id}` }, (payload) => {
+        setParticipants(prev => {
+          let next = [...prev]
+          if (payload.eventType === 'INSERT') {
+            if (!next.find(p => p.id === payload.new.id)) {
+              next.push(payload.new as Participant)
+            }
+          } else if (payload.eventType === 'UPDATE') {
+            const idx = next.findIndex(p => p.id === payload.new.id)
+            if (idx !== -1) {
+              next[idx] = payload.new as Participant
+            } else {
+              next.push(payload.new as Participant)
+            }
+          } else if (payload.eventType === 'DELETE') {
+            next = next.filter(p => p.id !== payload.old.id)
+          }
+          return next.sort((a, b) => b.score - a.score)
         })
       })
-      .subscribe()
-
-    const guessChannel = supabase
-      .channel(`host-guesses:${room.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'guesses', filter: `room_id=eq.${room.id}` }, ({ new: g }) => {
         setGuesses(prev => [...prev, g as Guess])
         if ((g as Guess).is_correct) {
@@ -64,8 +71,6 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
 
     return () => {
       supabase.removeChannel(roomChannel)
-      supabase.removeChannel(participantsChannel)
-      supabase.removeChannel(guessChannel)
     }
   }, [room.id, participants])
 
