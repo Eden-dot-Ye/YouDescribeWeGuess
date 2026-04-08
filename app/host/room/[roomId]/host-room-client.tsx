@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Room, Question, Participant, Guess } from '@/lib/types'
 import Leaderboard from '@/components/leaderboard'
@@ -27,6 +27,12 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
   const [participants, setParticipants] = useState<Participant[]>(initialParticipants)
   const [guesses, setGuesses] = useState<Guess[]>([])
   const [loading, setLoading] = useState(false)
+  const participantsRef = useRef<Participant[]>(initialParticipants)
+
+  // Keep the ref in sync with the latest participants state
+  useEffect(() => {
+    participantsRef.current = participants
+  }, [participants])
 
   const currentQuestion = questions.find(q => q.id === room.current_question_id) ?? null
   const currentQIndex = questions.findIndex(q => q.id === room.current_question_id)
@@ -63,7 +69,7 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'guesses', filter: `room_id=eq.${room.id}` }, ({ new: g }) => {
         setGuesses(prev => [...prev, g as Guess])
         if ((g as Guess).is_correct) {
-          const p = participants.find(p => p.id === (g as Guess).participant_id)
+          const p = participantsRef.current.find(p => p.id === (g as Guess).participant_id)
           toast.success(`${p?.nickname ?? 'Someone'} guessed correctly!`, { duration: 3000 })
         }
       })
@@ -72,7 +78,7 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
     return () => {
       supabase.removeChannel(roomChannel)
     }
-  }, [room.id, participants])
+  }, [room.id])
 
   // Load existing guesses for current question
   useEffect(() => {
