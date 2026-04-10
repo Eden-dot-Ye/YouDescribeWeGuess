@@ -28,6 +28,7 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
   const [guesses, setGuesses] = useState<Guess[]>([])
   const [loading, setLoading] = useState(false)
   const participantsRef = useRef<Participant[]>(initialParticipants)
+  const [usedDescriberIds, setUsedDescriberIds] = useState<Set<string>>(new Set())
 
   // Keep the ref in sync with the latest participants state
   useEffect(() => {
@@ -73,7 +74,14 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
           toast.success(`${p?.nickname ?? 'Someone'} guessed correctly!`, { duration: 3000 })
         }
       })
-      .subscribe()
+      .subscribe((status) => {
+        // Once subscribed, do a full reconcile to catch participants missed during setup
+        if (status === 'SUBSCRIBED') {
+          supabase.from('participants').select('*').eq('room_id', room.id).order('score', { ascending: false }).then(({ data }) => {
+            if (data) setParticipants(data)
+          })
+        }
+      })
 
     return () => {
       supabase.removeChannel(roomChannel)
@@ -98,15 +106,22 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
     // 1) Update room FIRST so clients load the question before describer is revealed
     await supabase.from('rooms').update({ current_question_id: questionId, status: 'active', timer_end_at: timerEndAt }).eq('id', room.id)
 
-    // 2) Only clear the OLD describer (not all participants) to avoid N update events
+    // 2) Pick describer using round-robin: exclude already-used describers
     const oldDescriber = participants.find(p => p.is_describer)
     if (participants.length > 0) {
-      const randomIdx = Math.floor(Math.random() * participants.length)
-      const newDescriberId = participants[randomIdx].id
-      if (oldDescriber && oldDescriber.id !== newDescriberId) {
+      let available = participants.filter(p => !usedDescriberIds.has(p.id))
+      // If everyone has been used, reset the pool
+      if (available.length === 0) {
+        setUsedDescriberIds(new Set())
+        available = [...participants]
+      }
+      const randomIdx = Math.floor(Math.random() * available.length)
+      const newDescriber = available[randomIdx]
+      if (oldDescriber && oldDescriber.id !== newDescriber.id) {
         await supabase.from('participants').update({ is_describer: false }).eq('id', oldDescriber.id)
       }
-      await supabase.from('participants').update({ is_describer: true }).eq('id', newDescriberId)
+      await supabase.from('participants').update({ is_describer: true }).eq('id', newDescriber.id)
+      setUsedDescriberIds(prev => new Set(prev).add(newDescriber.id))
     }
     setLoading(false)
     toast.success('Round started!')
@@ -114,18 +129,24 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
 
   const handlePickRandom = async () => {
     if (participants.length === 0) { toast.error('No participants yet.'); return }
-    const randomIdx = Math.floor(Math.random() * participants.length)
-    const newDescriberId = participants[randomIdx].id
+    // Pick from unused pool
+    let available = participants.filter(p => !usedDescriberIds.has(p.id))
+    if (available.length === 0) {
+      setUsedDescriberIds(new Set())
+      available = [...participants]
+    }
+    const randomIdx = Math.floor(Math.random() * available.length)
+    const newDescriber = available[randomIdx]
     setLoading(true)
     const supabase = createClient()
-    // Only clear old describer instead of all participants
     const oldDescriber = participants.find(p => p.is_describer)
-    if (oldDescriber && oldDescriber.id !== newDescriberId) {
+    if (oldDescriber && oldDescriber.id !== newDescriber.id) {
       await supabase.from('participants').update({ is_describer: false }).eq('id', oldDescriber.id)
     }
-    await supabase.from('participants').update({ is_describer: true }).eq('id', newDescriberId)
+    await supabase.from('participants').update({ is_describer: true }).eq('id', newDescriber.id)
+    setUsedDescriberIds(prev => new Set(prev).add(newDescriber.id))
     setLoading(false)
-    toast.success(`${participants[randomIdx].nickname} is now the describer!`)
+    toast.success(`${newDescriber.nickname} is now the describer!`)
   }
 
   const handleReveal = async () => {

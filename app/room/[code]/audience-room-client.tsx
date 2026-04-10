@@ -168,9 +168,16 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
           return next.sort((a, b) => b.score - a.score)
         })
       })
-      .subscribe()
+      .subscribe((status) => {
+        // Once subscribed, do a full load to catch anything missed during setup
+        if (status === 'SUBSCRIBED') {
+          supabase.from('participants').select('*').eq('room_id', room.id).order('score', { ascending: false }).then(({ data }) => {
+            if (data) setParticipants(data)
+          })
+        }
+      })
 
-    // Also initial load of participants
+    // Initial load of participants (may race with subscribe, but the callback above will reconcile)
     supabase.from('participants').select('*').eq('room_id', room.id).order('score', { ascending: false }).then(({ data }) => {
       if (data) setParticipants(data)
     })
