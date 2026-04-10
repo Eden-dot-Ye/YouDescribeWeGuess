@@ -1,46 +1,15 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import type { Participant } from '@/lib/types'
 import { Trophy, Medal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface LeaderboardProps {
-  roomId: string
+  participants: Participant[]
   className?: string
 }
 
-export default function Leaderboard({ roomId, className }: LeaderboardProps) {
-  const [participants, setParticipants] = useState<Participant[]>([])
-
-  useEffect(() => {
-    const supabase = createClient()
-
-    // Initial fetch
-    supabase
-      .from('participants')
-      .select('*')
-      .eq('room_id', roomId)
-      .order('score', { ascending: false })
-      .then(({ data }) => { if (data) setParticipants(data) })
-
-    // Realtime subscription
-    const channel = supabase
-      .channel(`leaderboard:${roomId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, () => {
-        supabase
-          .from('participants')
-          .select('*')
-          .eq('room_id', roomId)
-          .order('score', { ascending: false })
-          .then(({ data }) => { if (data) setParticipants(data) })
-      })
-      .subscribe()
-
-    return () => { supabase.removeChannel(channel) }
-  }, [roomId])
-
+export default function Leaderboard({ participants, className }: LeaderboardProps) {
   const medalColors = ['text-yellow-500', 'text-slate-400', 'text-amber-600']
   const medalIcons = [Trophy, Medal, Medal]
 

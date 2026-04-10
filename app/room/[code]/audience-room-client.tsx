@@ -180,6 +180,15 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
     }
   }, [joined, room?.id, participant?.id])
 
+  // Keep individual participant state in sync with participants array (realtime updates)
+  useEffect(() => {
+    if (!participant) return
+    const updated = participants.find(p => p.id === participant.id)
+    if (updated && (updated.score !== participant.score || updated.is_describer !== participant.is_describer)) {
+      setParticipant(updated)
+    }
+  }, [participants, participant])
+
   // Watch guesses for first correct
   useEffect(() => {
     const correct = guesses.find(g => g.is_correct)
@@ -300,7 +309,7 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
           </div>
         </div>
         <div className="lg:w-72 border-t lg:border-t-0 lg:border-l border-border bg-card p-4">
-          <Leaderboard roomId={room.id} />
+          <Leaderboard participants={participants} />
         </div>
       </main>
     )
@@ -321,7 +330,7 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
           </div>
         </div>
         <div className="lg:w-72 border-t lg:border-t-0 lg:border-l border-border bg-card p-4">
-          <Leaderboard roomId={room!.id} />
+          <Leaderboard participants={participants} />
         </div>
       </main>
     )
@@ -374,12 +383,16 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
                 <Mic className="w-5 h-5" />
                 You are the Describer!
               </div>
-              {question && (
+              {question ? (
                 <div className="space-y-1 pt-2">
                   <p className="text-xs text-muted-foreground uppercase tracking-wide">Your word to describe</p>
                   <p className="text-3xl font-bold text-foreground">{question.answer_zh}</p>
                   <p className="text-xl text-muted-foreground">{question.answer_en}</p>
                   <p className="text-xs text-muted-foreground mt-2">Describe it without spelling it out!</p>
+                </div>
+              ) : (
+                <div className="space-y-1 pt-2">
+                  <p className="text-muted-foreground text-sm animate-pulse">Loading your word…</p>
                 </div>
               )}
             </CardContent>
@@ -475,7 +488,7 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
 
       {/* Sidebar */}
       <div className="lg:w-72 border-t lg:border-t-0 lg:border-l border-border bg-card p-4 overflow-y-auto">
-        <Leaderboard roomId={room!.id} />
+        <Leaderboard participants={participants} />
       </div>
     </main>
   )

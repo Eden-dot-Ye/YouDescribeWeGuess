@@ -95,13 +95,19 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
     const q = questions.find(q => q.id === questionId)!
     const timerEndAt = new Date(Date.now() + q.time_limit * 1000).toISOString()
 
-    // Clear describer flag on all, then pick random non-describer to be describer
-    await supabase.from('participants').update({ is_describer: false }).eq('room_id', room.id)
+    // 1) Update room FIRST so clients load the question before describer is revealed
+    await supabase.from('rooms').update({ current_question_id: questionId, status: 'active', timer_end_at: timerEndAt }).eq('id', room.id)
+
+    // 2) Only clear the OLD describer (not all participants) to avoid N update events
+    const oldDescriber = participants.find(p => p.is_describer)
     if (participants.length > 0) {
       const randomIdx = Math.floor(Math.random() * participants.length)
-      await supabase.from('participants').update({ is_describer: true }).eq('id', participants[randomIdx].id)
+      const newDescriberId = participants[randomIdx].id
+      if (oldDescriber && oldDescriber.id !== newDescriberId) {
+        await supabase.from('participants').update({ is_describer: false }).eq('id', oldDescriber.id)
+      }
+      await supabase.from('participants').update({ is_describer: true }).eq('id', newDescriberId)
     }
-    await supabase.from('rooms').update({ current_question_id: questionId, status: 'active', timer_end_at: timerEndAt }).eq('id', room.id)
     setLoading(false)
     toast.success('Round started!')
   }
@@ -109,10 +115,15 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
   const handlePickRandom = async () => {
     if (participants.length === 0) { toast.error('No participants yet.'); return }
     const randomIdx = Math.floor(Math.random() * participants.length)
+    const newDescriberId = participants[randomIdx].id
     setLoading(true)
     const supabase = createClient()
-    await supabase.from('participants').update({ is_describer: false }).eq('room_id', room.id)
-    await supabase.from('participants').update({ is_describer: true }).eq('id', participants[randomIdx].id)
+    // Only clear old describer instead of all participants
+    const oldDescriber = participants.find(p => p.is_describer)
+    if (oldDescriber && oldDescriber.id !== newDescriberId) {
+      await supabase.from('participants').update({ is_describer: false }).eq('id', oldDescriber.id)
+    }
+    await supabase.from('participants').update({ is_describer: true }).eq('id', newDescriberId)
     setLoading(false)
     toast.success(`${participants[randomIdx].nickname} is now the describer!`)
   }
@@ -316,7 +327,7 @@ export default function HostRoomClient({ initialRoom, initialQuestions, initialP
 
         {/* Sidebar Leaderboard */}
         <div className="lg:w-72 border-t lg:border-t-0 lg:border-l border-border bg-card p-4 overflow-y-auto">
-          <Leaderboard roomId={room.id} />
+          <Leaderboard participants={participants} />
         </div>
       </div>
     </main>
