@@ -34,19 +34,52 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
   const [firstCorrect, setFirstCorrect] = useState<{ nickname: string; guess: string } | null>(null)
   const [notFound, setNotFound] = useState(false)
   const guessInputRef = useRef<HTMLInputElement>(null)
+  const joiningRef = useRef(false)
 
-  // Join room
-  const handleJoin = async () => {
-    const n = nicknameInput.trim()
+  // Session storage key for this room
+  const storageKey = `participant_${code}`
+
+  // Join room (also handles restore from session)
+  const handleJoin = useCallback(async (nameOverride?: string) => {
+    const n = (nameOverride ?? nicknameInput).trim()
     if (!n) return
+    if (joiningRef.current) return
+    joiningRef.current = true
     const supabase = createClient()
 
     // Find room by code
     const { data: roomData } = await supabase.from('rooms').select('*').eq('code', code).single()
-    if (!roomData) { setNotFound(true); return }
+    if (!roomData) { setNotFound(true); joiningRef.current = false; return }
     setRoom(roomData)
 
-    // Insert participant
+    // Try to restore participant from sessionStorage
+    const stored = sessionStorage.getItem(storageKey)
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        const { data: existing } = await supabase.from('participants').select('*').eq('id', parsed.id).eq('room_id', roomData.id).single()
+        if (existing) {
+          setParticipant(existing)
+          setNickname(existing.nickname)
+          setJoined(true)
+          joiningRef.current = false
+          return
+        }
+      } catch {}
+    }
+
+    // Check if participant with same nickname already exists in this room
+    const { data: existingByName } = await supabase.from('participants').select('*').eq('room_id', roomData.id).eq('nickname', n).single()
+    if (existingByName) {
+      setParticipant(existingByName)
+      setNickname(n)
+      setJoined(true)
+      sessionStorage.setItem(storageKey, JSON.stringify({ id: existingByName.id }))
+      joiningRef.current = false
+      return
+    }
+
+    // Insert new participant
     const { data: pData, error } = await supabase
       .from('participants')
       .insert({ room_id: roomData.id, nickname: n })
@@ -54,12 +87,24 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
       .single()
     if (error) {
       toast.error('Could not join: ' + error.message)
+      joiningRef.current = false
       return
     }
     setParticipant(pData)
     setNickname(n)
     setJoined(true)
-  }
+    sessionStorage.setItem(storageKey, JSON.stringify({ id: pData.id }))
+    joiningRef.current = false
+  }, [code, nicknameInput, storageKey])
+
+  // Auto-join: if initialNickname is provided (from home page) or session exists, join automatically
+  useEffect(() => {
+    if (joined) return
+    const stored = sessionStorage.getItem(storageKey)
+    if (stored || initialNickname.trim()) {
+      handleJoin(initialNickname.trim() || undefined)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // After joining, load current question and subscribe to changes
   useEffect(() => {
@@ -161,14 +206,29 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
     })
 
     if (!error && correct) {
-      // Award points
-      await supabase
-        .from('participants')
-        .update({ score: (participant.score ?? 0) + 100 })
-        .eq('id', participant.id)
-      setParticipant(p => p ? { ...p, score: (p.score ?? 0) + 100 } : p)
+      // Count how many correct guesses exist BEFORE this one (from other participants)
+      const { count } = await supabase
+        .from('guesses')
+        .select('*', { count: 'exact', head: true })
+        .eq('question_id', question.id)
+        .eq('is_correct', true)
+        .neq('participant_id', participant.id)
+
+      const existingCorrectCount = count ?? 0
+      // First correct: +100, second correct: +50, rest: 0
+      let points = 0
+      if (existingCorrectCount === 0) points = 100
+      else if (existingCorrectCount === 1) points = 50
+
+      if (points > 0) {
+        await supabase
+          .from('participants')
+          .update({ score: (participant.score ?? 0) + points })
+          .eq('id', participant.id)
+        setParticipant(p => p ? { ...p, score: (p.score ?? 0) + points } : p)
+      }
       setHasGuessedCorrect(true)
-      toast.success('Correct! +100 points', { duration: 3000 })
+      toast.success(points > 0 ? `Correct! +${points} points` : 'Correct! But no more bonus points.', { duration: 3000 })
     } else if (!error) {
       toast.error('Not quite — keep guessing!', { duration: 1500 })
     }
@@ -205,7 +265,7 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
                   maxLength={20}
                   autoFocus
                 />
-                <Button className="w-full" onClick={handleJoin} disabled={!nicknameInput.trim()}>
+                <Button className="w-full" onClick={() => handleJoin()} disabled={!nicknameInput.trim()}>
                   <Users className="w-4 h-4 mr-2" />
                   Join Room
                 </Button>
@@ -364,32 +424,53 @@ export default function AudienceRoomClient({ code, initialNickname }: Props) {
           </Card>
         )}
 
-        {/* Recent Guesses Feed */}
-        {guesses.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Guesses</p>
-            <div className="space-y-1 max-h-60 overflow-y-auto">
-              {[...guesses].reverse().map(g => {
-                const guesser = participants.find(p => p.id === g.participant_id)
-                return (
-                  <div
-                    key={g.id}
-                    className={cn(
-                      'flex items-center gap-2 px-3 py-2 rounded-lg text-sm',
-                      g.is_correct ? 'bg-game-correct/10 border border-game-correct/30' : 'bg-secondary/50'
-                    )}
-                  >
-                    {g.is_correct && <CheckCircle2 className="w-3.5 h-3.5 text-game-correct shrink-0" />}
-                    <span className={cn('font-medium shrink-0', g.participant_id === participant?.id ? 'text-primary' : 'text-foreground')}>
-                      {guesser?.nickname ?? 'Unknown'}:
-                    </span>
-                    <span className="text-muted-foreground truncate">{g.content}</span>
-                  </div>
-                )
-              })}
+        {/* Recent Guesses Feed — describer sees all; regular players see own only; reveal shows correct */}
+        {(() => {
+          const roomStatus = room?.status as string
+          const isRevealOrFinished = roomStatus === 'reveal' || roomStatus === 'finished'
+          let visibleGuesses: Guess[]
+          let sectionTitle: string
+          if (isRevealOrFinished) {
+            visibleGuesses = guesses.filter(g => g.is_correct)
+            sectionTitle = 'Correct Answers'
+          } else if (isDescriber) {
+            // Describer can see all guesses during active round
+            visibleGuesses = guesses
+            sectionTitle = 'All Guesses'
+          } else {
+            // Regular player only sees their own guesses
+            visibleGuesses = guesses.filter(g => g.participant_id === participant?.id)
+            sectionTitle = 'Your Guesses'
+          }
+          if (visibleGuesses.length === 0) return null
+          return (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                {sectionTitle}
+              </p>
+              <div className="space-y-1 max-h-60 overflow-y-auto">
+                {[...visibleGuesses].reverse().map(g => {
+                  const guesser = participants.find(p => p.id === g.participant_id)
+                  return (
+                    <div
+                      key={g.id}
+                      className={cn(
+                        'flex items-center gap-2 px-3 py-2 rounded-lg text-sm',
+                        g.is_correct ? 'bg-game-correct/10 border border-game-correct/30' : 'bg-secondary/50'
+                      )}
+                    >
+                      {g.is_correct && <CheckCircle2 className="w-3.5 h-3.5 text-game-correct shrink-0" />}
+                      <span className={cn('font-medium shrink-0', g.participant_id === participant?.id ? 'text-primary' : 'text-foreground')}>
+                        {guesser?.nickname ?? 'Unknown'}:
+                      </span>
+                      <span className="text-muted-foreground truncate">{g.content}</span>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
       </div>
 
       {/* Sidebar */}
